@@ -1,0 +1,23 @@
+# Template for livekit.yaml — rendered by `make render` (runs as part of
+# `make up`). Do not edit the generated livekit.yaml directly; edit this file.
+
+port: 7880
+
+rtc:
+  tcp_port: 7881
+  udp_port: 7882
+  use_external_ip: false
+  # The address LiveKit advertises in ICE candidates. Inside Docker it would
+  # otherwise advertise its container IP, which nothing outside Docker can
+  # reach — the websocket would connect but media would never flow. This must
+  # be the Mac's LAN IP so both the iOS simulator and physical phones on the
+  # same Wi-Fi can reach it.
+  node_ip: ${LAN_IP}
+
+# Dev credentials only — matches .env.example. Never use outside local dev.
+keys:
+  devkey: devsecret_change_me
+
+# Dev mode: console-friendly logs, and skips the "secret should be at least
+# 32 characters" error that livekit-server logs for short secrets.
+development: true

@@ -1,0 +1,93 @@
+name: debate-infra
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: debate-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: debate
+      POSTGRES_USER: debate
+      POSTGRES_PASSWORD: debate
+    ports:
+      # host port configurable so a locally installed Postgres doesn't block
+      # `make up` — set POSTGRES_PORT in .env (and match POSTGRES_URL)
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U debate -d debate"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: debate-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: debate-livekit
+    restart: unless-stopped
+    command: --config /etc/livekit.yaml
+    volumes:
+      # livekit.yaml is generated from livekit.yaml.template by `make render`;
+      # long-form bind so compose errors clearly if it's missing (use `make up`,
+      # not bare `docker compose up`, on a clean clone).
+      - type: bind
+        source: ./livekit.yaml
+        target: /etc/livekit.yaml
+        read_only: true
+    ports:
+      - "7880:7880"       # ws + http (signaling, REST)
+      - "7881:7881"       # WebRTC over TCP (fallback when UDP is blocked)
+      - "7882:7882/udp"   # WebRTC media over UDP
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:7880"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: debate-prometheus
+    restart: unless-stopped
+    profiles: ["monitoring"]
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    extra_hosts:
+      # no-op on Docker Desktop (already resolves), required on Linux engines
+      - "host.docker.internal:host-gateway"
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: debate-grafana
+    restart: unless-stopped
+    profiles: ["monitoring"]
+    depends_on:
+      - prometheus
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - ./monitoring/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+
+volumes:
+  postgres_data:
+  prometheus_data:
+  grafana_data:

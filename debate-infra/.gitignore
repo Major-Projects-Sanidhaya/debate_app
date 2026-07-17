@@ -1,0 +1,6 @@
+.env
+
+# generated from livekit.yaml.template by `make render`
+livekit.yaml
+
+.DS_Store
