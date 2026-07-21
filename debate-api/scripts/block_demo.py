@@ -53,7 +53,7 @@ async def assert_no_match(ws, name: str, seconds: float) -> None:
         if msg.get("type") == "match_found":
             raise AssertionError(f"[{name}] unexpectedly matched: {msg['match_id']}")
         raise AssertionError(f"[{name}] unexpected message: {msg}")
-    except asyncio.TimeoutError:
+    except TimeoutError:
         print(f"[{name}] still queued after {seconds:.0f}s ✓")
 
 

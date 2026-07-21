@@ -47,7 +47,9 @@ class Match(Base):
 
 class Report(Base):
     __tablename__ = "reports"
-    __table_args__ = (UniqueConstraint("reporter_id", "match_id", name="uq_reports_reporter_match"),)
+    __table_args__ = (
+        UniqueConstraint("reporter_id", "match_id", name="uq_reports_reporter_match"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     match_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("matches.id"), nullable=False)

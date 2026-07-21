@@ -16,6 +16,21 @@ down_revision = "0001"
 branch_labels = None
 depends_on = None
 
+UUID = postgresql.UUID(as_uuid=True)
+
+
+def _uuid_fk(name: str, target: str, *, nullable: bool = False) -> sa.Column:
+    return sa.Column(name, UUID, sa.ForeignKey(target), nullable=nullable)
+
+
+def _created_at() -> sa.Column:
+    return sa.Column(
+        "created_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.text("now()"),
+    )
+
 
 def upgrade() -> None:
     op.add_column(
@@ -26,50 +41,36 @@ def upgrade() -> None:
 
     op.create_table(
         "reports",
-        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column("match_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("matches.id"), nullable=False),
-        sa.Column("reporter_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id"), nullable=False),
-        sa.Column("reported_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id"), nullable=False),
+        sa.Column("id", UUID, primary_key=True),
+        _uuid_fk("match_id", "matches.id"),
+        _uuid_fk("reporter_id", "users.id"),
+        _uuid_fk("reported_id", "users.id"),
         sa.Column("reason", sa.Text(), nullable=False),
         sa.Column("details", sa.Text(), nullable=True),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            nullable=False,
-            server_default=sa.text("now()"),
-        ),
+        _created_at(),
         sa.UniqueConstraint("reporter_id", "match_id", name="uq_reports_reporter_match"),
     )
     op.create_index("ix_reports_reported_created", "reports", ["reported_id", "created_at"])
 
     op.create_table(
         "blocks",
-        sa.Column("blocker_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id"), primary_key=True),
-        sa.Column("blocked_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id"), primary_key=True),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            nullable=False,
-            server_default=sa.text("now()"),
-        ),
+        _uuid_fk("blocker_id", "users.id"),
+        _uuid_fk("blocked_id", "users.id"),
+        _created_at(),
+        sa.PrimaryKeyConstraint("blocker_id", "blocked_id"),
     )
 
     op.create_table(
         "moderation_events",
-        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column("match_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("matches.id"), nullable=False),
+        sa.Column("id", UUID, primary_key=True),
+        _uuid_fk("match_id", "matches.id"),
         sa.Column("source", sa.Text(), nullable=False),
         sa.Column("stance", sa.Text(), nullable=False),
-        sa.Column("user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id"), nullable=True),
+        _uuid_fk("user_id", "users.id", nullable=True),
         sa.Column("category", sa.Text(), nullable=False),
         sa.Column("severity", sa.Text(), nullable=False),
         sa.Column("excerpt", sa.Text(), nullable=False, server_default=sa.text("''")),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            nullable=False,
-            server_default=sa.text("now()"),
-        ),
+        _created_at(),
     )
     op.create_index("ix_moderation_events_match", "moderation_events", ["match_id"])
 

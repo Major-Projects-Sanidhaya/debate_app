@@ -64,7 +64,48 @@ match. Exits non-zero if anything doesn't match the contract.
     `{"type":"error","message"}`
   - `fact_check_mode` resolves to `"auto"` only if **both** users chose auto.
 - `POST /matches/{match_id}/end` → 204, idempotent, either participant.
+- `POST /matches/{match_id}/report`
+  `{"reason":"harassment|hate_speech|sexual_content|violence_threat|underage|spam_other","details":"<=500 chars, optional"}`
+  → 204. Participant-only (403 otherwise). Idempotent per `(reporter, match)`.
+- `POST /matches/{match_id}/block` → 204. Blocks the other participant.
+  Participant-only, idempotent.
+- Banned surfaces: `POST /auth/device` for a banned device → `403
+  {"detail":"account_suspended"}`; a banned user's WS join gets
+  `{"type":"error","message":"account_suspended"}` then close.
 - `GET /healthz` → `{"status":"ok"}` (no auth).
+
+### Internal moderation intake (debate-agent → api)
+
+- `POST /internal/moderation/events`, header `X-Internal-Key: <INTERNAL_API_KEY>`
+  `{"match_id","source":"transcript|video","stance":"pro|con","category":"harassment_hate|sexual_content|minor_safety|violence_threat|self_harm|test","severity":"medium|severe","excerpt":"<=300 chars","ts":<unix>}`
+  → 204. 401 on missing/wrong key.
+
+## Moderation
+
+Additive schema (migration `0002`): `reports`, `blocks`, `moderation_events`,
+`users.flagged`, `matches.ended_reason`. Side effects, all logged:
+
+- **`underage` / `sexual_content` reports** and **`severity:"severe"` internal
+  events** end the match immediately: the LiveKit room is deleted via
+  RoomService (best-effort — failures logged, never raised), `ended_reason` is
+  set to `"moderation"`, and the offending user is flagged. For events the
+  offender is mapped from `stance` → `user_pro`/`user_con`.
+- **Auto-ban:** once a user has reports from **≥3 distinct reporters within
+  24h**, `banned` is set to true automatically and logged loudly. Repeat
+  reports from the same reporter count once.
+- **Blocks** insert a row and mirror into a one-directional Redis set
+  `blocks:{blocker_id}`. The matchmaking Lua script checks **both** directions
+  at match time: when popping the opposite queue it scans up to 20 candidates,
+  skips any blocked either way, re-inserts skipped candidates at the head in
+  original order, and matches the first eligible one (else enqueues the caller).
+
+Scripts:
+
+- `python -m scripts.moderate <cmd>` — `list-reports`, `list-events`,
+  `list-flagged`, `show-transcript <match_id>` (reads `transcript:{match_id}`
+  from Redis), `ban <user_id>`, `unban <user_id>`.
+- `python -m scripts.block_demo` — end-to-end proof: A+B match, A blocks B,
+  both re-queue and stay unmatched, then C matches A.
 
 ## Matchmaking design
 
@@ -87,6 +128,11 @@ On match the popper inserts the `matches` row, mints two LiveKit tokens
 TTL), and pushes `match_found` to both sockets through an **in-process**
 connection manager. Every match creation is logged with `match_id`, topic,
 and mode.
+
+**Block exclusion** (see Moderation below) is enforced inside the same Lua
+script: it scans up to 20 opposite-queue candidates, skips any blocked in
+either direction (`blocks:{me}` ∋ C or `blocks:{C}` ∋ me), re-inserts skipped
+candidates at the head preserving order, and matches the first eligible one.
 
 ### LiveKit room + metadata (consumed by debate-agent)
 
@@ -112,11 +158,15 @@ incompatible with Redis Cluster hash slots.
 
 ## Database
 
-`users(id, device_id unique, banned, created_at)` ·
+`users(id, device_id unique, banned, flagged, created_at)` ·
 `topics(id, title unique, active)` ·
 `matches(id, topic_id, user_pro, user_con, fact_check_mode, started_at,
-ended_at)` — see `alembic/versions/0001_initial.py`. `python -m scripts.seed`
-inserts 10 contested topics, idempotently.
+ended_at, ended_reason)` · `reports(id, match_id, reporter_id, reported_id,
+reason, details, created_at, unique(reporter_id, match_id))` ·
+`blocks(blocker_id, blocked_id, created_at, pk(blocker_id, blocked_id))` ·
+`moderation_events(id, match_id, source, stance, user_id, category, severity,
+excerpt, created_at)` — migrations `0001` (core) and `0002` (moderation).
+`python -m scripts.seed` inserts 10 contested topics, idempotently.
 
 ## Tests
 

@@ -100,3 +100,56 @@ def test_fact_check_mode_resolution():
     assert resolve_fact_check_mode("auto", "on_demand") == "on_demand"
     assert resolve_fact_check_mode("on_demand", "auto") == "on_demand"
     assert resolve_fact_check_mode("on_demand", "on_demand") == "on_demand"
+
+
+# --- block exclusion (moderation) --------------------------------------------
+
+
+async def test_blocked_pair_never_matches_forward(mm, redis_client):
+    a, b = uid(), uid()
+    await redis_client.sadd(f"blocks:{a}", b)  # a blocked b (one-directional set)
+    assert (await mm.join(a, 1, "pro", "on_demand")).status == "queued"
+    # b is the only con-seeker; a is the only pro candidate but block-excluded.
+    assert (await mm.join(b, 1, "con", "on_demand")).status == "queued"
+    assert await redis_client.lrange("q:1:pro", 0, -1) == [a]  # a stays put
+    assert await redis_client.exists(f"inq:{a}")
+
+
+async def test_blocked_pair_never_matches_reverse(mm, redis_client):
+    # Exclusion must fire regardless of which side recorded the block.
+    a, b = uid(), uid()
+    await redis_client.sadd(f"blocks:{b}", a)  # b blocked a; a joins/queues first
+    await mm.join(a, 1, "pro", "on_demand")
+    assert (await mm.join(b, 1, "con", "on_demand")).status == "queued"
+    assert await redis_client.lrange("q:1:pro", 0, -1) == [a]
+
+
+async def test_skipped_candidates_stay_queued_in_order_and_next_eligible_matches(
+    mm, redis_client
+):
+    x, a, b, c = uid(), uid(), uid(), uid()
+    # pro queue fills in order: x, a (both blocked by c), then b (eligible).
+    await mm.join(x, 1, "pro", "on_demand")
+    await mm.join(a, 1, "pro", "on_demand")
+    await mm.join(b, 1, "pro", "on_demand")
+    await redis_client.sadd(f"blocks:{c}", x)
+    await redis_client.sadd(f"blocks:{c}", a)
+
+    outcome = await mm.join(c, 1, "con", "on_demand")
+    assert outcome.status == "matched"
+    assert outcome.peer_id == b  # first eligible after skipping x and a
+
+    # x and a re-inserted at the head in their original order; b consumed.
+    assert await redis_client.lrange("q:1:pro", 0, -1) == [x, a]
+    assert await redis_client.exists(f"inq:{x}")
+    assert await redis_client.exists(f"inq:{a}")
+    assert not await redis_client.exists(f"inq:{b}")
+    assert not await redis_client.exists(f"inq:{c}")  # matched, not enqueued
+
+
+async def test_block_does_not_affect_unrelated_users(mm, redis_client):
+    a, b, c = uid(), uid(), uid()
+    await redis_client.sadd(f"blocks:{a}", b)  # a<->b blocked, c is unrelated
+    await mm.join(a, 1, "pro", "on_demand")
+    outcome = await mm.join(c, 1, "con", "on_demand")
+    assert outcome.status == "matched" and outcome.peer_id == a

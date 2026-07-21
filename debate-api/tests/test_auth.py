@@ -30,9 +30,11 @@ def test_banned_user_rejected(client, migrated):
     )
     resp = client.post("/auth/device", json={"device_id": device_id, "over_18": True})
     assert resp.status_code == 403
+    assert resp.json()["detail"] == "account_suspended"
     # Existing token stops working too.
     resp = client.get("/topics", headers={"Authorization": f"Bearer {auth['token']}"})
     assert resp.status_code == 403
+    assert resp.json()["detail"] == "account_suspended"
 
 
 def test_routes_require_auth(client):
