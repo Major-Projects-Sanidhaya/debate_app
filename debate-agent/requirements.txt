@@ -3,6 +3,7 @@ livekit-agents>=1.0
 livekit-plugins-deepgram>=1.0
 livekit-api>=1.0
 anthropic>=0.40
+google-genai>=2.0
 redis>=5.0
 structlog>=24.1
 python-dotenv>=1.0

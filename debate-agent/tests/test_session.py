@@ -5,8 +5,6 @@ import dataclasses
 
 import pytest
 
-import pipeline.extraction as extraction
-import pipeline.verification as verification
 from pipeline.cache import ClaimCache
 from pipeline.models import PipelineError, Verdict
 from session import DebateSession, stance_of
@@ -19,12 +17,49 @@ def make_verdict(claim, verdict="false"):
     )
 
 
+class StubProvider:
+    """Interface-shaped stub; the session only touches these two methods."""
+
+    name = "stub"
+    extraction_model = "stub-extract"
+    verification_model = "stub-verify"
+
+    def __init__(self, extract=None, verify=None):
+        self.counts = {"extract": 0, "verify": 0}
+        self._extract = extract
+        self._verify = verify
+
+    async def extract_claims(self, topic, window):
+        self.counts["extract"] += 1
+        if self._extract is not None:
+            return await self._extract(topic, window)
+        return ["Claim X"], {"input_tokens": 1, "output_tokens": 1}
+
+    async def verify_claim(self, topic, claim):
+        self.counts["verify"] += 1
+        if self._verify is not None:
+            return await self._verify(topic, claim)
+        return make_verdict(claim), {}
+
+
+def make_provider(*, claims=("Claim X",), verdicts=None):
+    async def extract(topic, window):
+        return list(claims), {"input_tokens": 1, "output_tokens": 1}
+
+    async def verify(topic, claim):
+        if verdicts and claim in verdicts:
+            return verdicts[claim], {}
+        return make_verdict(claim), {}
+
+    return StubProvider(extract, verify)
+
+
 @pytest.fixture
 def published():
     return []
 
 
-def build_session(meta, fake_redis, clock, published, mode=None):
+def build_session(meta, fake_redis, clock, published, provider, mode=None):
     if mode is not None:
         meta = dataclasses.replace(meta, fact_check_mode=mode)
 
@@ -33,31 +68,12 @@ def build_session(meta, fake_redis, clock, published, mode=None):
 
     return DebateSession(
         meta,
-        anthropic_client=object(),
+        provider=provider,
         cache=ClaimCache(fake_redis),
         transcript=RollingTranscript(),
         publish=publish,
         clock=clock,
     )
-
-
-def patch_pipeline(monkeypatch, *, claims=("Claim X",), verdicts=None):
-    """Stub the two LLM stages; returns call-count dicts."""
-    counts = {"extract": 0, "verify": 0}
-
-    async def fake_extract(client, topic, window):
-        counts["extract"] += 1
-        return list(claims), {"input_tokens": 1, "output_tokens": 1}
-
-    async def fake_verify(client, topic, claim, **kwargs):
-        counts["verify"] += 1
-        if verdicts and claim in verdicts:
-            return verdicts[claim], {}
-        return make_verdict(claim), {}
-
-    monkeypatch.setattr(extraction, "extract_claims", fake_extract)
-    monkeypatch.setattr(verification, "verify_claim", fake_verify)
-    return counts
 
 
 def seed(session, stance, text, ts):
@@ -77,9 +93,9 @@ def test_stance_of_prefers_name_then_identity(meta):
 # ------------------------------------------------------------ on-demand flow
 
 
-async def test_on_demand_full_flow(meta, fake_redis, clock, published, monkeypatch):
-    patch_pipeline(monkeypatch, claims=("Opponent claim",))
-    session = build_session(meta, fake_redis, clock, published)
+async def test_on_demand_full_flow(meta, fake_redis, clock, published):
+    provider = make_provider(claims=("Opponent claim",))
+    session = build_session(meta, fake_redis, clock, published, provider)
     seed(session, "con", "the con speaker said something checkable", clock.now - 5)
 
     await session.handle_fact_check_request("uid-pro", "pro")
@@ -97,9 +113,9 @@ async def test_on_demand_full_flow(meta, fake_redis, clock, published, monkeypat
     assert isinstance(verdict["ts"], int)
 
 
-async def test_empty_window_errors(meta, fake_redis, clock, published, monkeypatch):
-    patch_pipeline(monkeypatch)
-    session = build_session(meta, fake_redis, clock, published)
+async def test_empty_window_errors(meta, fake_redis, clock, published):
+    provider = make_provider()
+    session = build_session(meta, fake_redis, clock, published, provider)
     seed(session, "con", "old statement", clock.now - 45)  # outside the 30s window
 
     await session.handle_fact_check_request("uid-pro", "pro")
@@ -108,16 +124,15 @@ async def test_empty_window_errors(meta, fake_redis, clock, published, monkeypat
     assert "30 seconds" in published[0]["message"]
 
 
-async def test_non_participant_rejected(meta, fake_redis, clock, published, monkeypatch):
-    patch_pipeline(monkeypatch)
-    session = build_session(meta, fake_redis, clock, published)
+async def test_non_participant_rejected(meta, fake_redis, clock, published):
+    session = build_session(meta, fake_redis, clock, published, make_provider())
     await session.handle_fact_check_request("random-listener", None)
     assert published[0]["type"] == "fact_check_error"
 
 
-async def test_cooldown_enforced_per_user(meta, fake_redis, clock, published, monkeypatch):
-    counts = patch_pipeline(monkeypatch)
-    session = build_session(meta, fake_redis, clock, published)
+async def test_cooldown_enforced_per_user(meta, fake_redis, clock, published):
+    provider = make_provider()
+    session = build_session(meta, fake_redis, clock, published, provider)
     seed(session, "con", "something to check", clock.now - 1)
 
     await session.handle_fact_check_request("uid-pro", "pro")
@@ -127,16 +142,16 @@ async def test_cooldown_enforced_per_user(meta, fake_redis, clock, published, mo
 
     errors = [m for m in published if m["type"] == "fact_check_error"]
     assert len(errors) == 1 and "wait" in errors[0]["message"].lower()
-    assert counts["extract"] == 1  # second request never ran the pipeline
+    assert provider.counts["extract"] == 1  # second request never ran the pipeline
 
     clock.advance(11)  # cooldown expired
     await session.handle_fact_check_request("uid-pro", "pro")
-    assert counts["extract"] == 2
+    assert provider.counts["extract"] == 2
 
 
-async def test_cooldown_is_per_user_not_global(meta, fake_redis, clock, published, monkeypatch):
-    counts = patch_pipeline(monkeypatch)
-    session = build_session(meta, fake_redis, clock, published)
+async def test_cooldown_is_per_user_not_global(meta, fake_redis, clock, published):
+    provider = make_provider()
+    session = build_session(meta, fake_redis, clock, published, provider)
     seed(session, "con", "con talk", clock.now - 1)
     seed(session, "pro", "pro talk", clock.now - 1)
 
@@ -144,27 +159,24 @@ async def test_cooldown_is_per_user_not_global(meta, fake_redis, clock, publishe
     clock.advance(2)
     await session.handle_fact_check_request("uid-con", "con")  # other user: allowed
 
-    assert counts["extract"] == 2
+    assert provider.counts["extract"] == 2
     assert not [m for m in published if m["type"] == "fact_check_error"]
 
 
-async def test_single_flight_rejects_concurrent_request(
-    meta, fake_redis, clock, published, monkeypatch
-):
+async def test_single_flight_rejects_concurrent_request(meta, fake_redis, clock, published):
     release = asyncio.Event()
     verify_calls = []
 
-    async def fake_extract(client, topic, window):
+    async def extract(topic, window):
         return ["Slow claim"], {}
 
-    async def slow_verify(client, topic, claim, **kwargs):
+    async def slow_verify(topic, claim):
         verify_calls.append(claim)
         await release.wait()
         return make_verdict(claim), {}
 
-    monkeypatch.setattr(extraction, "extract_claims", fake_extract)
-    monkeypatch.setattr(verification, "verify_claim", slow_verify)
-    session = build_session(meta, fake_redis, clock, published)
+    provider = StubProvider(extract, slow_verify)
+    session = build_session(meta, fake_redis, clock, published, provider)
     seed(session, "con", "con talk", clock.now - 1)
     seed(session, "pro", "pro talk", clock.now - 1)
 
@@ -181,14 +193,12 @@ async def test_single_flight_rejects_concurrent_request(
     assert [m["type"] for m in published if m["type"] == "verdict"] == ["verdict"]
 
 
-async def test_pipeline_error_becomes_fact_check_error(
-    meta, fake_redis, clock, published, monkeypatch
-):
-    async def failing_extract(client, topic, window):
+async def test_pipeline_error_becomes_fact_check_error(meta, fake_redis, clock, published):
+    async def failing_extract(topic, window):
         raise PipelineError("The fact-checker is unavailable right now.")
 
-    monkeypatch.setattr(extraction, "extract_claims", failing_extract)
-    session = build_session(meta, fake_redis, clock, published)
+    provider = StubProvider(failing_extract, None)
+    session = build_session(meta, fake_redis, clock, published, provider)
     seed(session, "con", "con talk", clock.now - 1)
 
     await session.handle_fact_check_request("uid-pro", "pro")
@@ -201,30 +211,27 @@ async def test_pipeline_error_becomes_fact_check_error(
 # ------------------------------------------------------------------- caching
 
 
-async def test_cache_hit_skips_verification(meta, fake_redis, clock, published, monkeypatch):
-    counts = patch_pipeline(monkeypatch, claims=("Cached claim",))
-    session = build_session(meta, fake_redis, clock, published)
+async def test_cache_hit_skips_verification(meta, fake_redis, clock, published):
+    provider = make_provider(claims=("Cached claim",))
+    session = build_session(meta, fake_redis, clock, published, provider)
     await ClaimCache(fake_redis).put("Cached claim", make_verdict("Cached claim"))
     seed(session, "con", "says the cached thing", clock.now - 1)
 
     await session.handle_fact_check_request("uid-pro", "pro")
 
-    assert counts["verify"] == 0  # served from cache
+    assert provider.counts["verify"] == 0  # served from cache
     verdict = [m for m in published if m["type"] == "verdict"][0]
     assert verdict["claim"] == "Cached claim"
     assert verdict["request_id"]  # fresh request id
     assert verdict["ts"] == int(clock.now)
 
 
-async def test_unverifiable_not_cached_via_session(
-    meta, fake_redis, clock, published, monkeypatch
-):
-    patch_pipeline(
-        monkeypatch,
+async def test_unverifiable_not_cached_via_session(meta, fake_redis, clock, published):
+    provider = make_provider(
         claims=("Fuzzy claim",),
         verdicts={"Fuzzy claim": make_verdict("Fuzzy claim", verdict="unverifiable")},
     )
-    session = build_session(meta, fake_redis, clock, published)
+    session = build_session(meta, fake_redis, clock, published, provider)
     seed(session, "con", "vague assertion", clock.now - 1)
 
     await session.handle_fact_check_request("uid-pro", "pro")
@@ -237,13 +244,13 @@ async def test_unverifiable_not_cached_via_session(
 # ----------------------------------------------------------------- auto mode
 
 
-async def test_auto_mode_checks_on_segment(meta, fake_redis, clock, published, monkeypatch):
-    counts = patch_pipeline(monkeypatch, claims=("Auto claim",))
-    session = build_session(meta, fake_redis, clock, published, mode="auto")
+async def test_auto_mode_checks_on_segment(meta, fake_redis, clock, published):
+    provider = make_provider(claims=("Auto claim",))
+    session = build_session(meta, fake_redis, clock, published, provider, mode="auto")
 
     await session.on_final_segment("con", "a checkable statement")
 
-    assert counts["extract"] == 1
+    assert provider.counts["extract"] == 1
     verdict = [m for m in published if m["type"] == "verdict"][0]
     assert verdict["mode"] == "auto"
     assert verdict["speaker_stance"] == "con"  # the speaker themselves
@@ -251,39 +258,38 @@ async def test_auto_mode_checks_on_segment(meta, fake_redis, clock, published, m
     assert not [m for m in published if m["type"] == "fact_check_status"]
 
 
-async def test_auto_mode_20s_per_speaker_gate(meta, fake_redis, clock, published, monkeypatch):
-    counts = patch_pipeline(monkeypatch, claims=("Auto claim",))
-    session = build_session(meta, fake_redis, clock, published, mode="auto")
+async def test_auto_mode_20s_per_speaker_gate(meta, fake_redis, clock, published):
+    provider = make_provider(claims=("Auto claim",))
+    session = build_session(meta, fake_redis, clock, published, provider, mode="auto")
 
     await session.on_final_segment("con", "first statement")
     clock.advance(5)
     await session.on_final_segment("con", "second statement too soon")
-    assert counts["extract"] == 1  # gated
+    assert provider.counts["extract"] == 1  # gated
 
     clock.advance(3)
     await session.on_final_segment("pro", "other speaker is independent")
-    assert counts["extract"] == 2  # per-speaker, not global
+    assert provider.counts["extract"] == 2  # per-speaker, not global
 
     clock.advance(21)
     await session.on_final_segment("con", "after the gap")
-    assert counts["extract"] == 3
+    assert provider.counts["extract"] == 3
 
 
-async def test_auto_mode_drops_when_inflight(meta, fake_redis, clock, published, monkeypatch):
+async def test_auto_mode_drops_when_inflight(meta, fake_redis, clock, published):
     release = asyncio.Event()
     verify_calls = []
 
-    async def fake_extract(client, topic, window):
+    async def extract(topic, window):
         return ["Busy claim"], {}
 
-    async def slow_verify(client, topic, claim, **kwargs):
+    async def slow_verify(topic, claim):
         verify_calls.append(claim)
         await release.wait()
         return make_verdict(claim), {}
 
-    monkeypatch.setattr(extraction, "extract_claims", fake_extract)
-    monkeypatch.setattr(verification, "verify_claim", slow_verify)
-    session = build_session(meta, fake_redis, clock, published, mode="auto")
+    provider = StubProvider(extract, slow_verify)
+    session = build_session(meta, fake_redis, clock, published, provider, mode="auto")
 
     first = asyncio.create_task(session.on_final_segment("con", "long statement"))
     while not verify_calls:
@@ -298,23 +304,81 @@ async def test_auto_mode_drops_when_inflight(meta, fake_redis, clock, published,
     assert len(verify_calls) == 1  # the dropped check never ran later
 
 
-async def test_auto_failures_stay_silent(meta, fake_redis, clock, published, monkeypatch):
-    async def failing_extract(client, topic, window):
+async def test_auto_failures_stay_silent(meta, fake_redis, clock, published):
+    async def failing_extract(topic, window):
         raise PipelineError("boom")
 
-    monkeypatch.setattr(extraction, "extract_claims", failing_extract)
-    session = build_session(meta, fake_redis, clock, published, mode="auto")
+    provider = StubProvider(failing_extract, None)
+    session = build_session(meta, fake_redis, clock, published, provider, mode="auto")
 
     await session.on_final_segment("con", "statement")
 
     assert published == []  # no error spam on the data channel in auto mode
 
 
-async def test_on_demand_mode_never_auto_checks(meta, fake_redis, clock, published, monkeypatch):
-    counts = patch_pipeline(monkeypatch)
-    session = build_session(meta, fake_redis, clock, published)  # on_demand
+async def test_on_demand_mode_never_auto_checks(meta, fake_redis, clock, published):
+    provider = make_provider()
+    session = build_session(meta, fake_redis, clock, published, provider)  # on_demand
 
     await session.on_final_segment("con", "a statement")
 
-    assert counts["extract"] == 0
+    assert provider.counts["extract"] == 0
     assert session.transcript.segments  # still recorded for later requests
+
+
+# ----------------------------------- full flow through the real provider code
+
+
+GOOD_VERDICT_JSON = (
+    '{"verdict":"false","confidence":"high",'
+    '"summary":"FBI data shows violent crime fell since 1991.",'
+    '"sources":[{"title":"Model Source","url":"https://model.example"}]}'
+)
+
+
+@pytest.fixture(params=["anthropic", "gemini"])
+def real_provider(request):
+    """Both provider implementations over scripted fakes: one extraction call,
+    then one verification call."""
+    if request.param == "anthropic":
+        from pipeline.providers.anthropic_provider import AnthropicProvider
+        from tests.conftest import FakeAnthropic, text_response
+
+        client = FakeAnthropic(
+            [text_response('{"claims": ["Opponent claim"]}'), text_response(GOOD_VERDICT_JSON)]
+        )
+        return AnthropicProvider(client=client)
+
+    from pipeline.providers.gemini_provider import GeminiProvider
+    from tests.conftest import FakeGeminiClient, gemini_chunk, gemini_response
+
+    client = FakeGeminiClient(
+        [
+            gemini_response('{"claims": ["Opponent claim"]}'),
+            gemini_response(
+                GOOD_VERDICT_JSON,
+                grounding=[gemini_chunk("Grounded Source", "https://grounded.example")],
+            ),
+        ]
+    )
+    return GeminiProvider(client=client)
+
+
+async def test_on_demand_flow_through_real_provider(
+    meta, fake_redis, clock, published, real_provider
+):
+    session = build_session(meta, fake_redis, clock, published, real_provider)
+    seed(session, "con", "the con speaker said something checkable", clock.now - 5)
+
+    await session.handle_fact_check_request("uid-pro", "pro")
+
+    assert [m["type"] for m in published] == ["fact_check_status", "verdict"]
+    verdict = published[1]
+    assert verdict["claim"] == "Opponent claim"
+    assert verdict["verdict"] == "false"
+    assert verdict["sources"], "sources must be populated"
+    if real_provider.name == "gemini":
+        # Grounding metadata beats the model's self-reported sources.
+        assert verdict["sources"] == [
+            {"title": "Grounded Source", "url": "https://grounded.example"}
+        ]

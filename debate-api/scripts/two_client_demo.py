@@ -1,6 +1,9 @@
 from dotenv import load_dotenv
 load_dotenv()
 
+from dotenv import load_dotenv
+load_dotenv()
+
 """Acceptance demo: two device users join opposite stances and both get match_found.
 
 Requires the api running (uvicorn app.main:app) and debate-infra up.

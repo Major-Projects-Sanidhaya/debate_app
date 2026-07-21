@@ -13,7 +13,7 @@ from app.db import make_engine_and_sessionmaker
 from app.livekit_rooms import make_livekit_api
 from app.logging_config import configure_logging
 from app.matchmaking import Matchmaker
-from app.routes import auth_routes, health, matches, topics
+from app.routes import auth_routes, health, matches, moderation, topics
 from app.ws import ConnectionManager
 from app.ws import router as ws_router
 
@@ -78,6 +78,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(auth_routes.router)
     app.include_router(topics.router)
     app.include_router(matches.router)
+    app.include_router(moderation.router)
     app.include_router(ws_router)
     return app
 

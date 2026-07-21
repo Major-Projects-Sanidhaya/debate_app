@@ -48,5 +48,5 @@ async def get_current_user(
     if user is None:
         raise HTTPException(status_code=401, detail="unknown user")
     if user.banned:
-        raise HTTPException(status_code=403, detail="user is banned")
+        raise HTTPException(status_code=403, detail="account_suspended")
     return user

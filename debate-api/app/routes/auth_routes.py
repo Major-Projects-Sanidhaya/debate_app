@@ -39,7 +39,7 @@ async def auth_device(
     await session.commit()
     user = await session.scalar(select(User).where(User.device_id == body.device_id))
     if user.banned:
-        raise HTTPException(status_code=403, detail="user is banned")
+        raise HTTPException(status_code=403, detail="account_suspended")
 
     logger.info("device_authed", user_id=str(user.id), created=result.rowcount == 1)
     token = mint_token(user.id, request.app.state.settings.jwt_secret)

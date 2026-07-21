@@ -202,16 +202,19 @@ async def _handle_join(ws: WebSocket, user_id: str, msg: JoinMessage) -> None:
         return
 
 
-async def _authenticate(ws: WebSocket, token: str | None) -> User | None:
+async def _authenticate(ws: WebSocket, token: str | None) -> "tuple[User | None, str]":
+    """Returns (user, error_message); error_message is set when user is None."""
     state = ws.app.state
     user_id = decode_token(token, state.settings.jwt_secret) if token else None
     if user_id is None:
-        return None
+        return None, "invalid token"
     async with state.sessionmaker() as session:
         user = await session.scalar(select(User).where(User.id == user_id))
-    if user is None or user.banned:
-        return None
-    return user
+    if user is None:
+        return None, "invalid token"
+    if user.banned:
+        return None, "account_suspended"
+    return user, ""
 
 
 @router.websocket("/ws/match")
@@ -219,10 +222,10 @@ async def ws_match(ws: WebSocket, token: str | None = Query(default=None)):
     # Token comes in the query string because browser WebSocket clients
     # cannot set an Authorization header.
     await ws.accept()
-    user = await _authenticate(ws, token)
+    user, auth_error = await _authenticate(ws, token)
     if user is None:
-        await _error(ws, "invalid token")
-        await ws.close(code=4401)
+        await _error(ws, auth_error)
+        await ws.close(code=4403 if auth_error == "account_suspended" else 4401)
         return
 
     user_id = str(user.id)

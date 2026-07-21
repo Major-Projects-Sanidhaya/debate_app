@@ -6,10 +6,9 @@ import anthropic
 import httpx
 import pytest
 
-from pipeline.extraction import extract_claims
 from pipeline.llm_json import REASK_PROMPT
 from pipeline.models import PipelineError
-from pipeline.verification import verify_claim
+from pipeline.providers.anthropic_provider import extract_claims, verify_claim
 from tests.conftest import FakeAnthropic, text_response
 
 GOOD_VERDICT = (

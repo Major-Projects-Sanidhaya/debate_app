@@ -10,10 +10,10 @@ import uuid
 
 import structlog
 
-from pipeline import extraction, verification
 from pipeline.cache import ClaimCache
 from pipeline.models import PipelineError, RoomMeta
 from pipeline.normalize import claim_hash
+from pipeline.providers.base import LLMProvider
 from transcript import RollingTranscript, Segment, TranscriptMirror
 
 logger = structlog.get_logger(__name__)
@@ -46,7 +46,7 @@ class DebateSession:
         self,
         meta: RoomMeta,
         *,
-        anthropic_client,
+        provider: LLMProvider,
         cache: ClaimCache,
         transcript: RollingTranscript,
         publish,  # async (dict) -> None; broadcast on the fact_check topic
@@ -54,7 +54,7 @@ class DebateSession:
         clock=time.time,
     ):
         self.meta = meta
-        self._client = anthropic_client
+        self._provider = provider
         self._cache = cache
         self.transcript = transcript
         self._publish = publish
@@ -155,7 +155,7 @@ class DebateSession:
         started = self._clock()
 
         try:
-            claims, usage = await extraction.extract_claims(self._client, self.meta.topic, window)
+            claims, usage = await self._provider.extract_claims(self.meta.topic, window)
         except PipelineError as exc:
             log.warning("extraction_failed", error=exc.user_message)
             if emit_errors:
@@ -187,9 +187,7 @@ class DebateSession:
                 continue
 
             try:
-                verdict, vusage = await verification.verify_claim(
-                    self._client, self.meta.topic, claim
-                )
+                verdict, vusage = await self._provider.verify_claim(self.meta.topic, claim)
             except PipelineError as exc:
                 claim_log.warning("verification_failed", error=exc.user_message)
                 if emit_errors:

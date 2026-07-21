@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     livekit_api_secret: str = "devsecret_change_me"
     # HS256 wants >= 32 bytes; keep that property when overriding.
     jwt_secret: str = "dev_jwt_secret_change_me_min_32_bytes_long"
+    # Shared secret for service-to-service moderation events (debate-agent).
+    internal_api_key: str = "dev_internal_key_change_me"
     cors_origins: str = "*"
 
     @property

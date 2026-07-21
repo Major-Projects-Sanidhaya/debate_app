@@ -54,6 +54,16 @@ def build_room_metadata(
     )
 
 
+async def delete_match_room(lkapi: api.LiveKitAPI, room_name: str) -> None:
+    """Moderation kill-switch: drop the room so both clients disconnect.
+    Best-effort — failures are logged, never raised."""
+    try:
+        await lkapi.room.delete_room(api.DeleteRoomRequest(room=room_name))
+        logger.info("livekit_room_deleted", room=room_name)
+    except Exception:
+        logger.exception("livekit_room_delete_failed", room=room_name)
+
+
 async def create_match_room(lkapi: api.LiveKitAPI, room_name: str, metadata: str) -> None:
     """Create the match room with metadata; never raises."""
     try:

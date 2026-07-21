@@ -1,7 +1,7 @@
 """Validate keys and prompts: extraction -> verification on a mock transcript.
 
-Uses the real Anthropic API (claim extraction + web-search verification) with
-no LiveKit, Deepgram, or Redis. Run this first:
+Runs against the ACTIVE provider (LLM_PROVIDER env: gemini default, or
+anthropic) with no LiveKit, Deepgram, or Redis. Run this first:
 
     python scripts/pipeline_demo.py
 """
@@ -18,13 +18,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from anthropic import AsyncAnthropic
-
 from logging_config import configure_logging
-from pipeline.extraction import extract_claims
-from pipeline.verification import verify_claim
+from pipeline.providers import get_provider
 
 TOPIC = "Gun control"
+
+KEY_VARS = {"gemini": "GEMINI_API_KEY", "anthropic": "ANTHROPIC_API_KEY"}
 
 # ~20 lines of plausible debate audio for one speaker window each.
 MOCK_TRANSCRIPT = [
@@ -55,12 +54,12 @@ def window_for(stance: str) -> str:
     return " ".join(text for s, text in MOCK_TRANSCRIPT if s == stance)
 
 
-async def check_speaker(client: AsyncAnthropic, stance: str) -> None:
+async def check_speaker(provider, stance: str) -> None:
     window = window_for(stance)
     print(f"\n{'=' * 72}\nSpeaker: {stance.upper()}  (window: {len(window)} chars)\n{'=' * 72}")
 
     t0 = time.time()
-    claims, usage = await extract_claims(client, TOPIC, window)
+    claims, usage = await provider.extract_claims(TOPIC, window)
     print(f"\nExtracted {len(claims)} claim(s) in {time.time() - t0:.1f}s  (usage: {usage})")
     for claim in claims:
         print(f"  - {claim}")
@@ -68,7 +67,7 @@ async def check_speaker(client: AsyncAnthropic, stance: str) -> None:
     for claim in claims:
         print(f"\n--- verifying: {claim!r}")
         t0 = time.time()
-        verdict, vusage = await verify_claim(client, TOPIC, claim)
+        verdict, vusage = await provider.verify_claim(TOPIC, claim)
         payload = verdict.core_dict()
         payload["latency_s"] = round(time.time() - t0, 1)
         payload["usage"] = vusage
@@ -76,16 +75,25 @@ async def check_speaker(client: AsyncAnthropic, stance: str) -> None:
 
 
 async def main() -> None:
-    if not os.getenv("ANTHROPIC_API_KEY"):
-        sys.exit("ANTHROPIC_API_KEY is not set — copy .env.example to .env and fill it in.")
+    provider_name = os.getenv("LLM_PROVIDER", "gemini").strip().lower()
+    key_var = KEY_VARS.get(provider_name)
+    if key_var and not os.getenv(key_var):
+        sys.exit(
+            f"{key_var} is not set for LLM_PROVIDER={provider_name} — "
+            "copy .env.example to .env and fill it in."
+        )
     configure_logging()
 
-    client = AsyncAnthropic()
+    provider = get_provider()
+    print(
+        f"provider={provider.name}  "
+        f"(extraction={provider.extraction_model}, verification={provider.verification_model})"
+    )
     try:
-        await check_speaker(client, "pro")
-        await check_speaker(client, "con")
+        await check_speaker(provider, "pro")
+        await check_speaker(provider, "con")
     finally:
-        await client.close()
+        await provider.aclose()
     print("\npipeline demo OK — prompts and keys are working")
 
 

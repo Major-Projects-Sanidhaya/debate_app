@@ -15,7 +15,6 @@ load_dotenv()
 
 import redis.asyncio as aioredis
 import structlog
-from anthropic import AsyncAnthropic
 from livekit import rtc
 from livekit.agents import (
     AutoSubscribe,
@@ -31,6 +30,7 @@ from livekit.plugins import deepgram
 from logging_config import configure_logging
 from pipeline.cache import ClaimCache
 from pipeline.models import parse_room_metadata
+from pipeline.providers import get_provider
 from session import DebateSession, stance_of
 from transcript import RollingTranscript, TranscriptMirror
 
@@ -63,7 +63,13 @@ async def entrypoint(ctx: JobContext) -> None:
     redis_client = aioredis.from_url(
         os.getenv("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True
     )
-    anthropic_client = AsyncAnthropic()  # ANTHROPIC_API_KEY from env
+    provider = get_provider()  # LLM_PROVIDER env: gemini (default) | anthropic
+    logger.info(
+        "llm_provider_selected",
+        provider=provider.name,
+        extraction_model=provider.extraction_model,
+        verification_model=provider.verification_model,
+    )
 
     async def publish(payload: dict) -> None:
         await ctx.room.local_participant.publish_data(
@@ -72,7 +78,7 @@ async def entrypoint(ctx: JobContext) -> None:
 
     session = DebateSession(
         meta,
-        anthropic_client=anthropic_client,
+        provider=provider,
         cache=ClaimCache(redis_client),
         transcript=RollingTranscript(),
         mirror=TranscriptMirror(redis_client, meta.match_id),
@@ -163,7 +169,7 @@ async def entrypoint(ctx: JobContext) -> None:
         for task in tasks:
             task.cancel()
         await redis_client.aclose()
-        await anthropic_client.close()
+        await provider.aclose()
 
     ctx.add_shutdown_callback(cleanup)
 

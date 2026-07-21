@@ -51,6 +51,40 @@ def add_usage(a: dict, b: dict) -> dict:
     return merged
 
 
+MAX_SOURCES = 3
+
+
+def validate_verdict_payload(data: dict) -> dict:
+    """Contract validation for the verification JSON, shared by all providers.
+    (Moved unchanged from the original Anthropic verification module.)"""
+    from pipeline.models import CONFIDENCES, VERDICTS
+
+    if data.get("verdict") not in VERDICTS:
+        raise ValueError(f"invalid verdict: {data.get('verdict')!r}")
+    if data.get("confidence") not in CONFIDENCES:
+        raise ValueError(f"invalid confidence: {data.get('confidence')!r}")
+    summary = data.get("summary")
+    if not isinstance(summary, str) or not summary.strip():
+        raise ValueError("missing summary")
+    raw_sources = data.get("sources", [])
+    if not isinstance(raw_sources, list):
+        raise ValueError('"sources" must be a list')
+    sources = []
+    for entry in raw_sources[:MAX_SOURCES]:
+        if (
+            isinstance(entry, dict)
+            and isinstance(entry.get("title"), str)
+            and isinstance(entry.get("url"), str)
+        ):
+            sources.append({"title": entry["title"], "url": entry["url"]})
+    return {
+        "verdict": data["verdict"],
+        "confidence": data["confidence"],
+        "summary": summary.strip(),
+        "sources": sources,
+    }
+
+
 def parse_json_object(text: str) -> dict:
     cleaned = text.strip()
     if cleaned.startswith("```"):

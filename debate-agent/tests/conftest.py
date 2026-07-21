@@ -65,6 +65,48 @@ def text_response(text, input_tokens=100, output_tokens=50):
     )
 
 
+class FakeGeminiModels:
+    """Scripted google-genai aio.models: responses, exceptions, or async callables."""
+
+    def __init__(self, script):
+        self.script = list(script)
+        self.calls: list = []
+
+    async def generate_content(self, *, model, contents, config):
+        self.calls.append({"model": model, "contents": contents, "config": config})
+        if not self.script:
+            raise AssertionError("FakeGemini ran out of scripted responses")
+        item = self.script.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        if callable(item):
+            return await item(model=model, contents=contents, config=config)
+        return item
+
+
+class FakeGeminiClient:
+    def __init__(self, script):
+        self.aio = SimpleNamespace(models=FakeGeminiModels(script))
+
+
+def gemini_chunk(title, uri):
+    return SimpleNamespace(web=SimpleNamespace(title=title, uri=uri))
+
+
+def gemini_response(text, grounding=None, prompt_tokens=100, output_tokens=50, thoughts=None):
+    metadata = SimpleNamespace(grounding_chunks=grounding) if grounding is not None else None
+    return SimpleNamespace(
+        text=text,
+        candidates=[SimpleNamespace(grounding_metadata=metadata)],
+        usage_metadata=SimpleNamespace(
+            prompt_token_count=prompt_tokens,
+            candidates_token_count=output_tokens,
+            thoughts_token_count=thoughts,
+            tool_use_prompt_token_count=None,
+        ),
+    )
+
+
 class FakeClock:
     def __init__(self, now=1000.0):
         self.now = now
