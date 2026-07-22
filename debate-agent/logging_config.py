@@ -4,8 +4,15 @@ import sys
 import structlog
 
 
-def configure_logging() -> None:
-    logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(message)s")
+def configure_logging(configure_stdlib: bool = True) -> None:
+    """Configure structlog (JSON to stdout) and, optionally, stdlib logging.
+
+    Pass configure_stdlib=False when something else already owns the stdlib
+    root logger — livekit-agents installs its own JSON handler in `start`
+    mode, and adding a second handler prints every library record twice.
+    """
+    if configure_stdlib:
+        logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(message)s")
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,

@@ -21,14 +21,15 @@ one automatically.
 ## First run
 
 ```sh
-npm install --legacy-peer-deps
+npm install
 cp .env.example .env   # set EXPO_PUBLIC_API_URL to your Mac's LAN IP
 ```
 
-`--legacy-peer-deps` is needed because `@config-plugins/react-native-webrtc`
-declares peer support up to Expo SDK 56 while the app is on SDK 57; the
-plugin only writes permissions into the native projects at prebuild and works
-fine.
+`.npmrc` sets `legacy-peer-deps=true` because
+`@config-plugins/react-native-webrtc` declares peer support up to Expo SDK 56
+while the app is on SDK 57; the plugin only writes permissions into the native
+projects at prebuild and works fine. EAS's cloud builder reads the same file —
+don't delete it, or remote builds fail during `npm install`.
 
 Then:
 
@@ -44,6 +45,19 @@ is just the Metro server (`npx expo start`) reusing the installed dev client.
 `EXPO_PUBLIC_*` values are inlined at bundle time — after editing `.env`,
 restart Metro (`npx expo start -c`).
 
+## Shipping to testers
+
+See **[BUILD_AND_SHIP.md](BUILD_AND_SHIP.md)** for the EAS runbook — an Android
+APK you can share as a link (no Play account needed) and iOS TestFlight.
+
+Two things to know before the first build:
+
+- **Replace `REPLACEME`** in `app.config.js`. The bundle identifier is the app's
+  permanent store identity; changing it after shipping creates a new app.
+- **`EXPO_PUBLIC_API_URL` is inlined at build time**, per `eas.json` profile —
+  `development` points at your LAN, `preview`/`production` at the deployed API.
+  Changing it always needs a rebuild, never just a reload.
+
 ## Flow
 
 1. **Bootstrap** — first launch generates a device UUID (SecureStore), shows
@@ -56,9 +70,42 @@ restart Metro (`npx expo start -c`).
    Home.
 4. **Room** — on `match_found`, connects to LiveKit using the per-match
    `livekit_url` + `livekit_token` from the server (never hardcoded). Remote
-   video full-bleed, local preview PiP, mic/cam toggles, Report (coming
-   soon), End (`POST /matches/{id}/end` → Home), Next (end + requeue with the
-   same selection). "Opponent left" overlay when the peer disconnects.
+   video full-bleed, local preview PiP, mic/cam toggles, Report, End
+   (`POST /matches/{id}/end` → Home), Next (end + requeue with the same
+   selection). "Opponent left" overlay when the peer disconnects.
+
+## Safety & moderation
+
+Client side of debate-api's moderation contract. All of it is JS-only — no new
+native modules, so it ships without a rebuild.
+
+- **Community guidelines** — shown once immediately after the age gate with an
+  Accept button; acceptance persists in SecureStore
+  (`guidelines_accepted_v1`), so it never appears again. Readable any time from
+  the link on Home (`/guidelines`).
+- **Report** — the Room screen's Report button opens a sheet with the six
+  contract reasons (human labels, enum values on the wire), an optional
+  ≤500-char details field, and two actions: **Report** (submit, stay in the
+  debate, success toast) and **Report & leave** (submit, then the normal End
+  flow). Failures show a non-blocking toast; "& leave" still leaves, because
+  a failed report shouldn't trap someone in a room with the person they're
+  reporting.
+- **Block** — the Room overflow menu (`⋯`) has **Block & leave**, and the
+  "Opponent left" overlay offers **Block this person** while the match id is
+  still known. Both `POST /matches/{id}/block`, then run the End flow home.
+- **Suspended** — a `403 account_suspended` from any authed request, or an
+  `account_suspended` error on the matchmaking socket, switches the app to a
+  full-screen Suspended state that replaces all navigation (the socket also
+  stops retrying). A banned device cold-starts into it: the stored token still
+  looks valid locally, so the ban surfaces on Home's first `/topics` call.
+  Support contact is a `mailto:` placeholder — **set a real address in
+  `src/components/suspended.tsx` before launch.**
+- **Moderation-ended debates** — debate-api deletes the LiveKit room when
+  moderation ends a match, so the client listens for a `ROOM_DELETED`
+  disconnect reason and shows "This debate was ended by moderation review."
+  Any other disconnect reason falls back to the existing generic ended state.
+  (The RN `LiveKitRoom`'s `onDisconnected` prop drops the reason argument, so
+  this listens to `RoomEvent.Disconnected` on the room object instead.)
 
 ## Testing with two clients
 
@@ -113,9 +160,12 @@ button — video is unaffected. Contract types and the defensive parser live in
 - `src/api/` — typed client + wire types matching the contract exactly
 - `src/hooks/use-matchmaking.ts` — websocket lifecycle: join, backoff
   reconnect, cancel, double-join guard
-- `src/state/` — zustand stores (auth/device identity, selection + match)
-- `src/app/` — expo-router screens (`_layout` gates on auth, `index` Home,
-  `queue`, `room`)
+- `src/state/` — zustand stores (auth/device identity + suspension, selection +
+  match, guidelines acceptance)
+- `src/components/` — shared UI plus the safety surfaces: `guidelines`,
+  `suspended`, `report-modal`
+- `src/app/` — expo-router screens (`_layout` gates on suspension → auth →
+  guidelines; then `index` Home, `queue`, `room`, `guidelines`)
 - `index.ts` — custom entry calling LiveKit's `registerGlobals()` before the
   router loads
 

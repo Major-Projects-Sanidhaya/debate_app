@@ -8,21 +8,15 @@ export function AgeGate() {
   const { status, error, attestAndAuth } = useAuthStore();
   const [checked, setChecked] = useState(false);
 
-  if (status === 'blocked') {
-    return (
-      <Screen style={styles.container}>
-        <Text style={styles.title}>Account blocked</Text>
-        <Text style={styles.copy}>{error ?? 'This device is not allowed to use Debate.'}</Text>
-      </Screen>
-    );
-  }
+  // Suspension is handled by the root layout, which renders the Suspended
+  // screen instead of any of this.
 
   return (
     <Screen style={styles.container}>
       <Text style={styles.title}>Debate</Text>
       <Text style={styles.copy}>
-        Live, unmoderated video debates with strangers who disagree with you. You must be an
-        adult to participate.
+        Live video debates with strangers who disagree with you. Debates are transcribed and
+        screened for safety. You must be an adult to participate.
       </Text>
 
       <Pressable style={styles.checkboxRow} onPress={() => setChecked((c) => !c)}>

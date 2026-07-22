@@ -195,5 +195,33 @@ docker run --rm -p 8000:8000 \
   debate-api
 ```
 
+The image's entrypoint runs a config preflight, then `alembic upgrade head`,
+then the idempotent seed, then `uvicorn` on `$PORT` (default 8000). Logs are
+JSON on stdout; nothing is written to a file in the container.
+
 (Local dev is normally `uvicorn` on the host — that's what debate-infra's
 Prometheus scrape target expects.)
+
+## Deploying
+
+See **[DEPLOY.md](DEPLOY.md)** for the Railway + LiveKit Cloud runbook.
+
+Two things worth knowing before you deploy:
+
+- **`ENV=production` refuses to boot on dev credentials** — a missing/short/
+  default `JWT_SECRET`, LiveKit's `devkey`/`devsecret_change_me`, or an unset
+  `INTERNAL_API_KEY`. The check runs before the database is touched and names
+  each problem in the logs.
+- **Managed Postgres URLs are normalized automatically.** `postgres://` and
+  `postgresql://` become `postgresql+asyncpg://`, libpq's `sslmode` is
+  translated to asyncpg's `ssl`, and other libpq-only query params are dropped
+  (SQLAlchemy forwards them straight to `asyncpg.connect()`, where they'd be a
+  `TypeError`). `DATABASE_URL` works as a fallback for `POSTGRES_URL`.
+
+The demo scripts double as production smoke tests — they read `API_BASE` and
+derive `ws`/`wss` from its scheme:
+
+```sh
+API_BASE=https://<domain> python -m scripts.two_client_demo
+API_BASE=https://<domain> python -m scripts.block_demo
+```

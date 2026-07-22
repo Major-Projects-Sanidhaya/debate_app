@@ -1,13 +1,10 @@
-from dotenv import load_dotenv
-load_dotenv()
-
-from dotenv import load_dotenv
-load_dotenv()
-
 """Acceptance demo: two device users join opposite stances and both get match_found.
 
-Requires the api running (uvicorn app.main:app) and debate-infra up.
-Run: python -m scripts.two_client_demo [--base http://localhost:8000]
+Local:      python -m scripts.two_client_demo
+Production: API_BASE=https://<domain> LIVEKIT_URL=wss://<project>.livekit.cloud \
+            LIVEKIT_API_KEY=... LIVEKIT_API_SECRET=... python -m scripts.two_client_demo
+
+Requires the api running and (locally) debate-infra up.
 """
 
 import argparse
@@ -23,6 +20,10 @@ from livekit import api as lk_api
 from app.config import get_settings
 from app.livekit_rooms import make_livekit_api
 
+# Loads .env on import, without overriding real environment variables — so
+# API_BASE / LIVEKIT_* passed on the command line win over local .env values.
+from scripts.endpoints import api_base, ws_base
+
 
 async def wait_for(ws, wanted_type: str) -> dict:
     while True:
@@ -34,14 +35,14 @@ async def wait_for(ws, wanted_type: str) -> dict:
             raise RuntimeError(f"server error: {msg['message']}")
 
 
-async def run_client(name: str, base: str, ws_base: str, topic_id: int, stance: str, mode: str):
+async def run_client(name: str, base: str, ws_url: str, topic_id: int, stance: str, mode: str):
     async with httpx.AsyncClient(base_url=base) as http:
         r = await http.post("/auth/device", json={"device_id": str(uuid.uuid4()), "over_18": True})
         r.raise_for_status()
         auth = r.json()
     print(f"[{name}] authed as user {auth['user_id']}")
 
-    async with websockets.connect(f"{ws_base}/ws/match?token={auth['token']}") as ws:
+    async with websockets.connect(f"{ws_url}/ws/match?token={auth['token']}") as ws:
         await ws.send(json.dumps(
             {"type": "join", "topic_id": topic_id, "stance": stance, "fact_check_mode": mode}
         ))
@@ -87,9 +88,10 @@ async def verify_room_metadata(match: dict, auth_pro: dict, auth_con: dict) -> N
 
 async def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base", default="http://localhost:8000")
+    parser.add_argument("--base", default=api_base(), help="API base URL (env: API_BASE)")
     args = parser.parse_args()
-    ws_base = args.base.replace("http://", "ws://").replace("https://", "wss://")
+    ws_url = ws_base(args.base)
+    print(f"target: {args.base}\n")
 
     async with httpx.AsyncClient(base_url=args.base) as http:
         r = await http.post("/auth/device", json={"device_id": str(uuid.uuid4()), "over_18": True})
@@ -102,8 +104,8 @@ async def main() -> None:
     print(f"using topic {topic['id']}: {topic['title']!r}\n")
 
     (auth_a, match_a), (auth_b, match_b) = await asyncio.gather(
-        run_client("pro-client", args.base, ws_base, topic["id"], "pro", "auto"),
-        run_client("con-client", args.base, ws_base, topic["id"], "con", "on_demand"),
+        run_client("pro-client", args.base, ws_url, topic["id"], "pro", "auto"),
+        run_client("con-client", args.base, ws_url, topic["id"], "con", "on_demand"),
     )
 
     assert match_a["match_id"] == match_b["match_id"], "clients got different matches!"

@@ -23,6 +23,9 @@ logger = structlog.get_logger(__name__)
 def create_app(settings: Settings | None = None) -> FastAPI:
     configure_logging()
     settings = settings or get_settings()
+    # Fatal, before anything binds a port: never serve production traffic with
+    # development credentials.
+    settings.enforce_production_guards()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

@@ -11,11 +11,13 @@ COPY app ./app
 COPY alembic ./alembic
 COPY alembic.ini ./
 COPY scripts ./scripts
+COPY docker-entrypoint.sh ./
 
-RUN pip install .
+RUN pip install . && chmod +x docker-entrypoint.sh
 
 RUN useradd --create-home appuser
 USER appuser
 
+# Railway injects PORT; 8000 is the local default.
 EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+ENTRYPOINT ["./docker-entrypoint.sh"]

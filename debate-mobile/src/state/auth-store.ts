@@ -1,7 +1,7 @@
 import * as Crypto from 'expo-crypto';
 import { create } from 'zustand';
 
-import { api, ApiError } from '@/api/client';
+import { api, ApiError, isSuspendedError } from '@/api/client';
 import { deleteItem, getItem, setItem } from '@/lib/storage';
 
 const KEYS = { deviceId: 'device_id', token: 'auth_token', userId: 'user_id' } as const;
@@ -10,7 +10,7 @@ type AuthStatus =
   | 'loading' // reading SecureStore on launch
   | 'needs_gate' // no token yet — show the age gate
   | 'authenticating' // age gate accepted, POST /auth/device in flight
-  | 'blocked' // server said 403 (banned)
+  | 'suspended' // banned: 403 account_suspended from REST or the WS
   | 'ready';
 
 interface AuthState {
@@ -22,6 +22,8 @@ interface AuthState {
   bootstrap: () => Promise<void>;
   attestAndAuth: () => Promise<void>;
   reauth: () => Promise<string | null>;
+  /** Terminal: any surface that sees account_suspended calls this. */
+  suspend: () => void;
   signOutLocally: () => Promise<void>;
 }
 
@@ -56,7 +58,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       set({ status: 'ready', token: res.token, userId: res.user_id });
     } catch (err) {
       if (err instanceof ApiError && err.status === 403) {
-        set({ status: 'blocked', error: err.message });
+        set({ status: 'suspended', error: err.message });
       } else {
         set({ status: 'needs_gate', error: 'Could not reach the server. Check your connection.' });
       }
@@ -75,9 +77,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       return res.token;
     } catch (err) {
       if (err instanceof ApiError && err.status === 403) {
-        set({ status: 'blocked', error: err.message, token: null, userId: null });
+        set({ status: 'suspended', error: err.message, token: null, userId: null });
       }
       return null;
+    }
+  },
+
+  suspend: () => {
+    if (get().status !== 'suspended') {
+      set({ status: 'suspended', error: 'account_suspended' });
     }
   },
 

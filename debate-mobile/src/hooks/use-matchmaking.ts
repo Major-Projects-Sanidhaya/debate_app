@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { matchmakingWsUrl } from '@/api/client';
+import { matchmakingWsUrl, SUSPENDED_DETAIL } from '@/api/client';
 import type { ClientMessage, MatchFound } from '@/api/types';
 import { parseServerMessage } from '@/api/types';
+import { useAuthStore } from '@/state/auth-store';
 import type { Selection } from '@/state/session-store';
 
 export type MatchmakingStatus = 'connecting' | 'searching' | 'reconnecting' | 'failed';
@@ -14,6 +15,10 @@ interface MatchmakingState {
 }
 
 const MAX_BACKOFF_MS = 15_000;
+// Give up after this many consecutive failed connects and surface a real
+// error. Retrying forever looks identical to a hang, and a tester pointed at
+// an unreachable API would otherwise just watch the spinner.
+const MAX_CONNECT_ATTEMPTS = 5;
 const backoffDelay = (attempt: number) =>
   Math.min(1000 * 2 ** attempt, MAX_BACKOFF_MS) + Math.random() * 500;
 
@@ -39,6 +44,8 @@ export function useMatchmaking(
   const doneRef = useRef(false); // matched or cancelled: stop reconnecting
   const onMatchRef = useRef(onMatch);
   onMatchRef.current = onMatch;
+  // Bumping this re-runs the effect, which is how "Try again" reconnects.
+  const [retryNonce, setRetryNonce] = useState(0);
 
   useEffect(() => {
     if (!selection || !token) return;
@@ -75,6 +82,14 @@ export function useMatchmaking(
           onMatchRef.current(msg);
           ws.close();
         } else if (msg.type === 'error') {
+          if (msg.message === SUSPENDED_DETAIL) {
+            // Terminal: stop the retry cycle and hand off to the Suspended
+            // screen, which replaces the whole app.
+            doneRef.current = true;
+            ws.close();
+            useAuthStore.getState().suspend();
+            return;
+          }
           // e.g. "already in queue" from a not-yet-reaped previous socket:
           // surface it and let the retry cycle recover.
           setState((s) => ({ ...s, error: msg.message }));
@@ -85,6 +100,15 @@ export function useMatchmaking(
         if (doneRef.current || wsRef.current !== ws) return;
         const delay = backoffDelay(attempt);
         attempt += 1;
+        if (attempt >= MAX_CONNECT_ATTEMPTS) {
+          // Stop and hand the user something actionable instead of spinning.
+          setState({
+            status: 'failed',
+            error: 'Could not reach the server.',
+            attempt,
+          });
+          return;
+        }
         setState((s) => ({ status: 'reconnecting', error: s.error, attempt }));
         timerRef.current = setTimeout(connect, delay);
       };
@@ -111,7 +135,7 @@ export function useMatchmaking(
       }
       ws?.close();
     };
-  }, [selection, token]);
+  }, [selection, token, retryNonce]);
 
   // Explicit cancel for the Cancel button; navigation unmount does the same.
   const cancel = useCallback(() => {
@@ -129,5 +153,11 @@ export function useMatchmaking(
     ws?.close();
   }, []);
 
-  return { ...state, cancel };
+  /** Reconnect after a give-up ("Try again" on the unreachable state). */
+  const retry = useCallback(() => {
+    setState({ status: 'connecting', error: null, attempt: 0 });
+    setRetryNonce((n) => n + 1);
+  }, []);
+
+  return { ...state, cancel, retry };
 }

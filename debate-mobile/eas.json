@@ -1,0 +1,44 @@
+{
+  "cli": {
+    "version": ">= 5.0.0",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "development": {
+      "//": "Custom dev client for local work against the LAN API. Install once, then iterate with `npx expo start --dev-client`.",
+      "developmentClient": true,
+      "distribution": "internal",
+      "env": {
+        "//": "REPLACE with your Mac's LAN IP (debate-infra: `make lan-ip`). localhost only works on the iOS simulator — a physical phone needs the LAN IP.",
+        "EXPO_PUBLIC_API_URL": "http://192.168.1.100:8000"
+      }
+    },
+    "preview": {
+      "//": "Shareable test build: Android APK you can send as a link/QR. No Play Console needed.",
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "//": "REPLACE with your deployed debate-api domain (see debate-api/DEPLOY.md).",
+        "EXPO_PUBLIC_API_URL": "https://your-api.up.railway.app"
+      }
+    },
+    "production": {
+      "//": "Store builds: Android App Bundle + iOS archive for TestFlight/App Store.",
+      "distribution": "store",
+      "autoIncrement": true,
+      "env": {
+        "//": "REPLACE with your deployed debate-api domain. Must be https — App Store review rejects cleartext HTTP.",
+        "EXPO_PUBLIC_API_URL": "https://your-api.up.railway.app"
+      }
+    }
+  },
+  "submit": {
+    "production": {
+      "//": "Filled in by `eas submit`; see BUILD_AND_SHIP.md for the values it asks for.",
+      "ios": {},
+      "android": {}
+    }
+  }
+}

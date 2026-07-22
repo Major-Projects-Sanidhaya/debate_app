@@ -86,6 +86,58 @@ async def test_stale_entry_skipped_and_cleaned(mm, redis_client):
     assert await redis_client.llen("q:1:pro") == 0  # ghost entry discarded
 
 
+async def test_dead_candidate_discarded_not_requeued_across_repeated_joins(mm, redis_client):
+    """A genuinely-dead candidate — still in the queue list but with its inq
+    gone (no live connection: TTL expiry, crashed replica, disconnect cleanup) —
+    must be popped and DISCARDED, never re-pushed. Two opposite-stance joins in
+    a row must not re-encounter it.
+
+    Regression guard against conflating the block-exclusion "skip but keep in
+    queue" path (LPUSH back at the head) with dead-peer discard. If they were
+    merged, the dead entry would survive the first join's LPOP and the second
+    join would pop it again.
+    """
+    dead = uid()
+    await mm.join(dead, 1, "pro", "on_demand")
+    await redis_client.delete(f"inq:{dead}")  # no live connection -> inq gone
+    assert await redis_client.lrange("q:1:pro", 0, -1) == [dead]  # stale list entry remains
+
+    # First opposite-stance join: dead is popped and discarded, joiner enqueues.
+    first = uid()
+    outcome1 = await mm.join(first, 1, "con", "on_demand")
+    assert outcome1.status == "queued"  # did NOT match the dead candidate
+    assert outcome1.peer_id is None
+    # The crux: discarded outright, not re-pushed back onto the pro queue.
+    assert await redis_client.lrange("q:1:pro", 0, -1) == []
+
+    # Second opposite-stance join must not re-encounter the dead candidate.
+    second = uid()
+    outcome2 = await mm.join(second, 1, "con", "on_demand")
+    assert outcome2.status == "queued"
+    assert outcome2.peer_id is None
+    assert await redis_client.lrange("q:1:pro", 0, -1) == []
+    assert not await redis_client.exists(f"inq:{dead}")  # never resurrected
+
+
+async def test_dead_peer_discarded_while_blocked_peer_is_requeued(mm, redis_client):
+    """The two skip reasons stay distinct within one scan: a dead peer (inq
+    gone) is discarded, while a live but block-excluded peer keeps its slot."""
+    dead, blocked, joiner = uid(), uid(), uid()
+    # pro queue in order: dead (inq deleted), then blocked (live, joiner blocks it).
+    await mm.join(dead, 1, "pro", "on_demand")
+    await mm.join(blocked, 1, "pro", "on_demand")
+    await redis_client.delete(f"inq:{dead}")
+    await redis_client.sadd(f"blocks:{joiner}", blocked)
+
+    outcome = await mm.join(joiner, 1, "con", "on_demand")
+    assert outcome.status == "queued"  # no eligible peer
+
+    # dead -> discarded; blocked -> re-pushed and still queued with its inq.
+    assert await redis_client.lrange("q:1:pro", 0, -1) == [blocked]
+    assert await redis_client.exists(f"inq:{blocked}")
+    assert not await redis_client.exists(f"inq:{dead}")
+
+
 async def test_self_match_guarded(mm, redis_client):
     a = uid()
     # Forge a stale self entry in the opposite-stance queue.

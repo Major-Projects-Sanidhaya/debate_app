@@ -4,8 +4,10 @@ Narrative: A(pro) and B(con) match; A blocks B; both re-queue the same topic
 and must BOTH stay queued (the Lua exclusion skips the blocked pair, both
 directions); then C(con) joins and matches A while B keeps waiting.
 
-Requires the api running (uvicorn app.main:app) and debate-infra up.
-Run: python -m scripts.block_demo [--base http://localhost:8000]
+Local:      python -m scripts.block_demo
+Production: API_BASE=https://<domain> python -m scripts.block_demo
+
+Requires the api running and (locally) debate-infra up.
 """
 
 import argparse
@@ -15,6 +17,10 @@ import uuid
 
 import httpx
 import websockets
+
+# Loads .env on import, without overriding real environment variables — so
+# API_BASE passed on the command line wins over local .env values.
+from scripts.endpoints import api_base, ws_base
 
 
 async def auth(base: str, name: str) -> dict:
@@ -26,8 +32,8 @@ async def auth(base: str, name: str) -> dict:
     return data
 
 
-async def ws_connect(ws_base: str, auth_data: dict):
-    return await websockets.connect(f"{ws_base}/ws/match?token={auth_data['token']}")
+async def ws_connect(ws_url: str, auth_data: dict):
+    return await websockets.connect(f"{ws_url}/ws/match?token={auth_data['token']}")
 
 
 async def join(ws, topic_id: int, stance: str) -> None:
@@ -59,10 +65,11 @@ async def assert_no_match(ws, name: str, seconds: float) -> None:
 
 async def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base", default="http://localhost:8000")
+    parser.add_argument("--base", default=api_base(), help="API base URL (env: API_BASE)")
     args = parser.parse_args()
     base = args.base
-    ws_base = base.replace("http://", "ws://").replace("https://", "wss://")
+    ws_url = ws_base(base)
+    print(f"target: {base}")
 
     auth_a = await auth(base, "A")
     auth_b = await auth(base, "B")
@@ -77,8 +84,8 @@ async def main() -> None:
 
     # --- Step 1: A(pro) + B(con) match -----------------------------------
     print("\nstep 1: A(pro) + B(con) match")
-    ws_a = await ws_connect(ws_base, auth_a)
-    ws_b = await ws_connect(ws_base, auth_b)
+    ws_a = await ws_connect(ws_url, auth_a)
+    ws_b = await ws_connect(ws_url, auth_b)
     await join(ws_a, topic_id, "pro")
     await recv_until(ws_a, "queued")
     await join(ws_b, topic_id, "con")
@@ -100,8 +107,8 @@ async def main() -> None:
 
     # --- Step 3: both re-queue; neither may match ------------------------
     print("\nstep 3: both re-queue the same topic — must BOTH stay queued")
-    ws_a = await ws_connect(ws_base, auth_a)
-    ws_b = await ws_connect(ws_base, auth_b)
+    ws_a = await ws_connect(ws_url, auth_a)
+    ws_b = await ws_connect(ws_url, auth_b)
     await join(ws_a, topic_id, "pro")
     await recv_until(ws_a, "queued")
     await join(ws_b, topic_id, "con")
@@ -113,7 +120,7 @@ async def main() -> None:
 
     # --- Step 4: C(con) joins and matches A ------------------------------
     print("\nstep 4: C(con) joins — must match A (B keeps waiting)")
-    ws_c = await ws_connect(ws_base, auth_c)
+    ws_c = await ws_connect(ws_url, auth_c)
     await join(ws_c, topic_id, "con")
     match_c = await recv_until(ws_c, "match_found")
     match_a2 = await recv_until(ws_a, "match_found")

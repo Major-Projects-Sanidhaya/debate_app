@@ -21,7 +21,7 @@ export default function Queue() {
     [setMatch],
   );
 
-  const { status, error, cancel } = useMatchmaking(selection, token, onMatch);
+  const { status, error, cancel, retry } = useMatchmaking(selection, token, onMatch);
 
   if (!selection) return <Redirect href="/" />;
 
@@ -29,6 +29,25 @@ export default function Queue() {
     cancel();
     router.back();
   };
+
+  // Unreachable API: stop pretending to search and offer a way forward.
+  if (status === 'failed') {
+    return (
+      <Screen style={styles.container}>
+        <View style={styles.center}>
+          <Text style={styles.searching}>Can&apos;t reach the server</Text>
+          <Text style={styles.errorCopy}>
+            We couldn&apos;t connect to matchmaking. Check your internet connection and try
+            again.
+          </Text>
+          <View style={styles.errorActions}>
+            <Button label="Try again" onPress={retry} />
+            <Button label="Back" variant="secondary" onPress={onCancel} />
+          </View>
+        </View>
+      </Screen>
+    );
+  }
 
   return (
     <Screen style={styles.container}>
@@ -82,4 +101,12 @@ const styles = StyleSheet.create({
   topic: { color: colors.text, fontSize: 18, fontWeight: '700', textAlign: 'center' },
   meta: { color: colors.textDim, fontSize: 15 },
   warn: { color: '#D29922', textAlign: 'center' },
+  errorCopy: {
+    color: colors.textDim,
+    fontSize: 15,
+    lineHeight: 22,
+    textAlign: 'center',
+    paddingHorizontal: 8,
+  },
+  errorActions: { alignSelf: 'stretch', gap: 10 },
 });

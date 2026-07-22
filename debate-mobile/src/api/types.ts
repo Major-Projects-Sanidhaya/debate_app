@@ -4,6 +4,31 @@
 export type Stance = 'pro' | 'con';
 export type FactCheckMode = 'on_demand' | 'auto';
 
+/** Report reasons — the enum values are the API contract; labels are ours. */
+export type ReportReason =
+  | 'harassment'
+  | 'hate_speech'
+  | 'sexual_content'
+  | 'violence_threat'
+  | 'underage'
+  | 'spam_other';
+
+export const REPORT_REASONS: { value: ReportReason; label: string }[] = [
+  { value: 'harassment', label: 'Harassment or bullying' },
+  { value: 'hate_speech', label: 'Hate speech' },
+  { value: 'sexual_content', label: 'Sexual content or nudity' },
+  { value: 'violence_threat', label: 'Threats of violence' },
+  { value: 'underage', label: 'They appear to be under 18' },
+  { value: 'spam_other', label: 'Spam or something else' },
+];
+
+export const REPORT_DETAILS_MAX = 500;
+
+export interface ReportBody {
+  reason: ReportReason;
+  details?: string;
+}
+
 export interface Topic {
   id: number;
   title: string;

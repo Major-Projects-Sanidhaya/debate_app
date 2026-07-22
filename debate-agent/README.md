@@ -61,6 +61,76 @@ match (e.g. `python -m scripts.two_client_demo` in debate-api) and watch it join
   [ai.google.dev](https://ai.google.dev/gemini-api/docs/models) (Anthropic path:
   docs.claude.com).
 
+## Content moderation
+
+Alongside fact-checking, the agent screens each debate for policy violations and
+reports them to debate-api's internal intake
+(`POST {INTERNAL_API_URL}/internal/moderation/events`, header `X-Internal-Key`).
+debate-api decides what to do — a `severity: "severe"` event terminates the match
+(LiveKit room deleted, `ended_reason='moderation'`, offender flagged).
+
+**Moderation never delays or breaks fact-checking.** Screening runs in
+fire-and-forget tasks off the STT path, and every failure — bad model output,
+transport error, a down debate-api — is logged and swallowed, never raised into
+the session.
+
+- **Transcript screening** — at most one call per speaker per 15s, classifying
+  that speaker's last ~30s. Heated disagreement, insults about *ideas*, and
+  profanity are explicitly not violations; the screen looks for targeted
+  harassment/hate, sexual content, anything involving minors, credible violent
+  threats, and self-harm risk. `medium` posts an event with a ≤300-char excerpt;
+  `severe` posts one and debate-api ends the match. Malformed model output gets
+  one re-ask, then the screening is dropped and logged.
+- **Video screening** — one frame per `VIDEO_SAMPLE_INTERVAL` seconds per
+  speaker, downscaled to ≤512px JPEG and classified for sexual content or
+  violence/gore (`violence_gore` maps to the contract's `violence_threat`).
+  Events carry an empty excerpt and `source: "video"`. Set
+  `VIDEO_MODERATION_ENABLED=false` to skip it entirely — the agent then
+  subscribes to audio only.
+- **Privacy hard rule** — frames are analyzed in memory and discarded. Nothing
+  writes a frame to disk, Redis, or logs; moderation logs carry only
+  `{match_id, stance, category, severity, latency, ts}`.
+- **Model** — moderation goes through the active provider's `complete_json`, so
+  it follows `LLM_PROVIDER` like everything else. On `LLM_PROVIDER=anthropic`
+  that is `claude-haiku-4-5-20251001` for both text and vision; on the `gemini`
+  default it is the provider's configured fast model (keeps dev on the free
+  tier). Switch providers to move moderation with it.
+
+### Dev test hook
+
+Setting `MODERATION_TEST_PHRASE` makes any finalized transcript segment
+containing that phrase (case-insensitive) synthesize a **severe** `test` event
+immediately, with no model call and no debounce — the fastest way to exercise
+match termination end to end:
+
+```sh
+MODERATION_TEST_PHRASE="banana protocol" python agent.py dev
+# say "banana protocol" in a live debate -> match terminates within seconds
+cd ../debate-api && python -m scripts.moderate list-events   # the event lands here
+```
+
+> **This is a dev-only backdoor: anyone who says the phrase kills the match.
+> `MODERATION_TEST_PHRASE` must be blank/unset in production.** The agent logs
+> `moderation_test_phrase_active` at startup whenever it is set.
+
+## Deploying
+
+See **[DEPLOY.md](DEPLOY.md)** for the Railway + LiveKit Cloud runbook. Two
+things worth knowing first:
+
+- **The worker dials out.** It opens a websocket to LiveKit and receives jobs on
+  it — no inbound ports, no public domain. So you can run `python agent.py dev`
+  on your laptop against LiveKit Cloud and serve real matches before deploying
+  anything.
+- **`ENV=production` refuses to start** on dev LiveKit credentials, a missing
+  `DEEPGRAM_API_KEY` or `INTERNAL_API_KEY`, or a missing key for the *selected*
+  provider (`GEMINI_API_KEY` when `LLM_PROVIDER=gemini`, `ANTHROPIC_API_KEY`
+  when `anthropic`). Each problem is logged as JSON before the process exits 1.
+
+Production runs `python agent.py start` (the Dockerfile CMD); `dev` adds
+hot-reload. On SIGTERM the worker drains for up to 5 minutes, then each job
+flushes in-flight moderation POSTs before closing its clients.
+
 ## Architecture
 
 ```
@@ -83,6 +153,16 @@ session.py  DebateSession ─────────────┘
         │                       can't combine JSON mode with grounding)
         ├─ anthropic_provider.py  the original implementation, moved unchanged
         └─ ../cache.py          claim_cache:{sha256(normalized)} — 72h, never "unverifiable"
+
+moderation/  (fire-and-forget, never blocks the above)
+   ├─ moderator.py       15s/speaker transcript debounce, video sample gate,
+   │                     dev test-phrase hook, event posting
+   ├─ classifier.py      text + vision screening via provider.complete_json,
+   │                     strict JSON with one re-ask then drop
+   ├─ frames.py          rtc frame -> <=512px JPEG in memory (never persisted)
+   ├─ internal_client.py POST /internal/moderation/events, X-Internal-Key,
+   │                     retry once then log and drop; never raises
+   └─ config.py          INTERNAL_API_*, MODERATION_TEST_PHRASE, VIDEO_*
 ```
 
 - **Stance attribution:** participant `name` is `"pro"`/`"con"` (set by debate-api's
@@ -92,8 +172,9 @@ session.py  DebateSession ─────────────┘
   *opponent's* last 30s. **Auto** (only when metadata says `auto`): each finalized
   segment considers that *speaker's* last 20s. Auto failures stay in logs — no error
   spam on the data channel.
-- `session.py` and `pipeline/` import no LiveKit — the whole decision core is
-  unit-testable (`pytest`, 60 tests, all external services mocked).
+- `session.py`, `pipeline/`, and `moderation/` import no LiveKit — the whole
+  decision core is unit-testable (`pytest`, 111 tests, all external services
+  mocked).
 - Every check logs `match_id`, mode, claim hash, cache hit/miss, verdict, latency,
   and provider token usage (same `input_tokens`/`output_tokens` fields for both
   providers; Gemini adds `thought_tokens` when present) as JSON for cost tracking.
@@ -130,7 +211,7 @@ if the contract is ever revised.
 pytest
 ```
 
-60 tests, all external services mocked. Covers: normalization/hashing, cache
+111 tests, all external services mocked. Covers: normalization/hashing, cache
 roundtrip + never-cache-unverifiable, metadata parsing incl. fallback, the Anthropic
 strict-JSON re-ask-once-then-error flow, verification timeout/retry, model-404
 no-substitution on both providers, Gemini structured-output extraction, grounded

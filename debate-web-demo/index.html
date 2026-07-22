@@ -1,0 +1,102 @@
+<!doctype html>
+<!--
+  debate-web-demo — DISPOSABLE DEV TOOL, NOT A PRODUCT SURFACE.
+
+  A zero-build browser client for demoing the debate backend (matchmaking,
+  LiveKit video, live fact-checking) in two browser profiles on one laptop.
+  It deliberately skips the age gate, guidelines, error hardening, and all
+  styling polish the real client (debate-mobile) has. Do NOT use this as a
+  reference implementation for a real web client.
+
+  Run: python3 -m http.server 5500   (from this folder)  ->  http://localhost:5500
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>debate-web-demo</title>
+  <style>
+    body { background: #0d1117; color: #e6edf3; font: 14px/1.5 system-ui, sans-serif;
+           max-width: 860px; margin: 0 auto; padding: 16px; }
+    h1 { font-size: 18px; }
+    section { margin: 16px 0; padding: 12px; border: 1px solid #2d333b; border-radius: 8px; }
+    label { margin-right: 12px; }
+    input[type="text"] { width: 320px; background: #161b22; color: #e6edf3;
+                         border: 1px solid #2d333b; border-radius: 6px; padding: 6px 8px; }
+    select, button { background: #161b22; color: #e6edf3; border: 1px solid #2d333b;
+                     border-radius: 6px; padding: 7px 12px; }
+    button { cursor: pointer; }
+    button:disabled { opacity: 0.4; cursor: default; }
+    button.primary { background: #1f4fd0; border-color: #1f4fd0; }
+    #status { color: #8b949e; min-height: 1.4em; }
+    .videos { display: flex; gap: 10px; align-items: flex-start; }
+    video { background: #000; border-radius: 8px; }
+    #remoteVideo { width: 480px; height: 360px; }
+    #localVideo  { width: 160px; height: 120px; }
+    .chip { display: inline-block; padding: 2px 10px; border-radius: 999px;
+            font-size: 12px; background: #2d333b; color: #8b949e; }
+    .chip.active { background: #1d572d; color: #7ee2a8; }
+    #notice { color: #d29922; min-height: 1.4em; }
+    #feed { margin-top: 10px; }
+    .verdict-card { border: 1px solid #2d333b; border-radius: 8px; padding: 10px;
+                    margin-bottom: 8px; }
+    .verdict-word { font-weight: 700; text-transform: uppercase; }
+    .v-true { color: #2ea043; } .v-false { color: #f85149; }
+    .v-misleading { color: #d29922; } .v-unverifiable { color: #8b949e; }
+    .feed-notice { color: #8b949e; font-size: 12px; margin-bottom: 6px; }
+    .claim { font-style: italic; }
+    .sources a { color: #58a6ff; margin-right: 10px; }
+    .row { margin: 8px 0; }
+  </style>
+</head>
+<body>
+  <h1>debate-web-demo <span style="color:#8b949e;font-size:12px">(throwaway dev tool)</span></h1>
+
+  <section id="config">
+    <label>API base <input type="text" id="apiBase" /></label>
+    <span id="authState" class="chip">auth: …</span>
+  </section>
+
+  <div id="status"></div>
+
+  <section id="picker" hidden>
+    <div class="row">
+      <label>Topic <select id="topicSelect"></select></label>
+    </div>
+    <div class="row">
+      Stance:
+      <label><input type="radio" name="stance" value="pro" checked /> pro</label>
+      <label><input type="radio" name="stance" value="con" /> con</label>
+      &nbsp; Fact-check:
+      <label><input type="radio" name="mode" value="on_demand" checked /> on_demand</label>
+      <label><input type="radio" name="mode" value="auto" /> auto</label>
+    </div>
+    <button id="findBtn" class="primary">Find Match</button>
+  </section>
+
+  <section id="searching" hidden>
+    Searching for an opponent…
+    <button id="cancelBtn">Cancel</button>
+  </section>
+
+  <section id="room" hidden>
+    <div class="row">
+      <strong id="roomTopic"></strong> — <span id="roomStances"></span>
+      &nbsp; <span id="agentChip" class="chip">fact-checker: waiting…</span>
+    </div>
+    <div class="videos">
+      <video id="remoteVideo" autoplay playsinline></video>
+      <video id="localVideo" autoplay playsinline muted></video>
+    </div>
+    <div id="notice"></div>
+    <div class="row">
+      <button id="factCheckBtn" class="primary" disabled>Fact Check</button>
+      <button id="muteBtn">Mute mic</button>
+      <button id="audioUnlockBtn" hidden>Click to enable audio</button>
+      <button id="endBtn">End</button>
+    </div>
+    <div id="feed"></div>
+  </section>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

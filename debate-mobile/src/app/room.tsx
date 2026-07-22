@@ -2,19 +2,30 @@ import {
   isTrackReference,
   useLocalParticipant,
   useRemoteParticipants,
+  useRoomContext,
   useTracks,
 } from '@livekit/components-react';
 import { AudioSession, LiveKitRoom, VideoTrack } from '@livekit/react-native';
 import { useCameraPermissions, useMicrophonePermissions } from 'expo-camera';
 import { Redirect, router } from 'expo-router';
-import { Track } from 'livekit-client';
+import { DisconnectReason, RoomEvent, Track } from 'livekit-client';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { BackHandler, Linking, Platform, StyleSheet, Text, View } from 'react-native';
+import {
+  BackHandler,
+  Linking,
+  Modal,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 
 import { api } from '@/api/client';
 import { AGENT_IDENTITY } from '@/api/fact-check';
-import type { MatchFound } from '@/api/types';
+import type { MatchFound, ReportReason } from '@/api/types';
 import { FactCheckButton, FactCheckChip, Toast, VerdictSheet } from '@/components/fact-check';
+import { ReportModal } from '@/components/report-modal';
 import { Button, colors, Screen } from '@/components/ui';
 import { useFactCheck } from '@/hooks/use-fact-check';
 import { useAuthStore } from '@/state/auth-store';
@@ -142,6 +153,27 @@ function RoomInner({
   const tracks = useTracks([Track.Source.Camera]);
   const remoteParticipants = useRemoteParticipants();
   const { isCameraEnabled, isMicrophoneEnabled, localParticipant } = useLocalParticipant();
+  const room = useRoomContext();
+  const token = useAuthStore((s) => s.token);
+
+  const [reportVisible, setReportVisible] = useState(false);
+  const [menuVisible, setMenuVisible] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  // debate-api deletes the LiveKit room when moderation ends a match — the
+  // only thing that removes a room out from under a live debate. Any other
+  // reason (or none at all) falls back to the generic ended state.
+  const [endedByModeration, setEndedByModeration] = useState(false);
+  useEffect(() => {
+    if (!room) return;
+    const onDisconnected = (reason?: DisconnectReason) => {
+      if (reason === DisconnectReason.ROOM_DELETED) setEndedByModeration(true);
+    };
+    room.on(RoomEvent.Disconnected, onDisconnected);
+    return () => {
+      room.off(RoomEvent.Disconnected, onDisconnected);
+    };
+  }, [room]);
 
   // The fact-check agent is a hidden participant; it must never render or
   // count toward opponent presence, even if its tracks/identity ever surface.
@@ -175,6 +207,34 @@ function RoomInner({
   const opponentLeft = opponentJoined && !opponentPresent;
 
   const stanceColor = (s: string) => (s === 'pro' ? colors.pro : colors.con);
+
+  const submitReport = async (reason: ReportReason, details: string, leave: boolean) => {
+    if (!token) return;
+    setSubmitting(true);
+    try {
+      await api.reportMatch(token, match.match_id, { reason, details });
+      setReportVisible(false);
+      showToast('Report sent. Our safety team will review it.');
+    } catch {
+      setReportVisible(false);
+      showToast('Could not send the report. Please try again.');
+    } finally {
+      setSubmitting(false);
+      // Leaving is the user's stated intent — honour it even if the report
+      // failed, rather than trapping them in a room with this person.
+      if (leave) onEnd();
+    }
+  };
+
+  const blockAndLeave = async () => {
+    setMenuVisible(false);
+    if (token) {
+      // Fire and forget: the block is idempotent server-side and leaving
+      // must not wait on the network.
+      void api.blockOpponent(token, match.match_id).catch(() => {});
+    }
+    onEnd();
+  };
 
   return (
     <View style={styles.room}>
@@ -230,7 +290,8 @@ function RoomInner({
             variant="secondary"
             onPress={() => void localParticipant.setCameraEnabled(!isCameraEnabled)}
           />
-          <Button label="Report · Coming soon" variant="secondary" disabled />
+          <Button label="Report" variant="secondary" onPress={() => setReportVisible(true)} />
+          <Button label="⋯" variant="secondary" onPress={() => setMenuVisible(true)} />
         </View>
         <View style={styles.actionRow}>
           <View style={{ flex: 1 }}>
@@ -242,22 +303,65 @@ function RoomInner({
         </View>
       </View>
 
-      {opponentLeft || connectionLost ? (
+      {endedByModeration || opponentLeft || connectionLost ? (
         <View style={styles.overlay}>
           <View style={styles.overlayCard}>
             <Text style={styles.overlayTitle}>
-              {connectionLost ? 'Connection lost' : 'Opponent left'}
+              {endedByModeration
+                ? 'Debate ended'
+                : connectionLost
+                  ? 'Connection lost'
+                  : 'Opponent left'}
             </Text>
             <Text style={styles.dim}>
-              {connectionLost
-                ? 'The room disconnected.'
-                : 'Your opponent ended the debate or dropped out.'}
+              {endedByModeration
+                ? 'This debate was ended by moderation review.'
+                : connectionLost
+                  ? 'The room disconnected.'
+                  : 'Your opponent ended the debate or dropped out.'}
             </Text>
+            {opponentLeft && !endedByModeration ? (
+              <Button
+                label="Block this person"
+                variant="secondary"
+                onPress={() => void blockAndLeave()}
+              />
+            ) : null}
             <Button label="Next opponent" onPress={onNext} />
             <Button label="Home" variant="secondary" onPress={onEnd} />
           </View>
         </View>
       ) : null}
+
+      <ReportModal
+        visible={reportVisible}
+        submitting={submitting}
+        onCancel={() => setReportVisible(false)}
+        onSubmit={(reason, details, leave) => void submitReport(reason, details, leave)}
+      />
+
+      <Modal
+        visible={menuVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setMenuVisible(false)}
+        statusBarTranslucent
+      >
+        <Pressable style={styles.menuBackdrop} onPress={() => setMenuVisible(false)}>
+          <View style={styles.menuCard}>
+            <Button
+              label="Block & leave"
+              variant="danger"
+              onPress={() => void blockAndLeave()}
+            />
+            <Text style={styles.menuHint}>
+              Blocking ends this debate and makes sure you are never matched with this person
+              again.
+            </Text>
+            <Button label="Cancel" variant="ghost" onPress={() => setMenuVisible(false)} />
+          </View>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -324,6 +428,22 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   overlayTitle: { color: colors.text, fontSize: 22, fontWeight: '800' },
+  menuBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    justifyContent: 'flex-end',
+    padding: 20,
+    paddingBottom: 40,
+  },
+  menuCard: {
+    backgroundColor: colors.surface,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: 18,
+    gap: 10,
+  },
+  menuHint: { color: colors.textDim, fontSize: 13, lineHeight: 19, textAlign: 'center' },
   permTitle: { color: colors.text, fontSize: 22, fontWeight: '800', textAlign: 'center' },
   permCopy: { color: colors.textDim, fontSize: 15, textAlign: 'center', lineHeight: 22 },
   dim: { color: colors.textDim, fontSize: 15, textAlign: 'center' },

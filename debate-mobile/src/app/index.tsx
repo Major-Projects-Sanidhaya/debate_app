@@ -2,7 +2,7 @@ import { router } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { api, ApiError } from '@/api/client';
+import { api, ApiError, isSuspendedError } from '@/api/client';
 import type { FactCheckMode, Stance, Topic } from '@/api/types';
 import { Button, colors, Screen, Segmented } from '@/components/ui';
 import { useAuthStore } from '@/state/auth-store';
@@ -11,6 +11,7 @@ import { useSessionStore } from '@/state/session-store';
 export default function Home() {
   const token = useAuthStore((s) => s.token);
   const reauth = useAuthStore((s) => s.reauth);
+  const suspend = useAuthStore((s) => s.suspend);
   const setSelection = useSessionStore((s) => s.setSelection);
 
   const [topics, setTopics] = useState<Topic[] | null>(null);
@@ -26,6 +27,12 @@ export default function Home() {
     try {
       setTopics(await api.getTopics(token));
     } catch (err) {
+      // A banned device cold-starting still has a stored token; its first
+      // authed request is what reveals the ban.
+      if (isSuspendedError(err)) {
+        suspend();
+        return;
+      }
       // Expired token → silent re-auth once, then retry.
       if (err instanceof ApiError && err.status === 401) {
         const fresh = await reauth();
@@ -40,7 +47,7 @@ export default function Home() {
       }
       setLoadError('Could not load topics. Is the server reachable?');
     }
-  }, [token, reauth]);
+  }, [token, reauth, suspend]);
 
   useEffect(() => {
     void loadTopics();
@@ -118,6 +125,9 @@ export default function Home() {
         <Text style={styles.hint}>Auto only activates if both debaters opt in.</Text>
 
         <Button label="Find Opponent" disabled={!selectedTopic} onPress={findOpponent} />
+        <Pressable onPress={() => router.push('/guidelines')} style={styles.guidelinesLink}>
+          <Text style={styles.guidelinesLinkText}>Community guidelines</Text>
+        </Pressable>
       </View>
     </Screen>
   );
@@ -148,4 +158,10 @@ const styles = StyleSheet.create({
   hint: { color: colors.textDim, fontSize: 13 },
   error: { color: colors.danger, textAlign: 'center' },
   dim: { color: colors.textDim },
+  guidelinesLink: { alignSelf: 'center', paddingVertical: 4 },
+  guidelinesLinkText: {
+    color: colors.textDim,
+    fontSize: 13,
+    textDecorationLine: 'underline',
+  },
 });
