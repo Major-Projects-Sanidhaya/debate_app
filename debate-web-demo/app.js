@@ -1,6 +1,7 @@
 // debate-web-demo — disposable dev tool. See the comment in index.html.
 // Vanilla JS, no build step; livekit-client (the real BROWSER SDK, not the
-// react-native one) is imported straight from a CDN.
+// react-native one) is imported straight from
+// a CDN.
 
 const $ = (id) => document.getElementById(id);
 const setStatus = (text) => { $('status').textContent = text; };
